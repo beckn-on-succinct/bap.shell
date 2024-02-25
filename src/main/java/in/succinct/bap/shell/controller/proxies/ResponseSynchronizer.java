@@ -1,28 +1,22 @@
 package in.succinct.bap.shell.controller.proxies;
 
-import com.venky.core.io.Locker;
 import com.venky.core.util.Bucket;
 import com.venky.swf.db.Database;
-import com.venky.swf.plugins.background.core.TaskManager;
+import com.venky.swf.plugins.background.core.AsyncTaskManagerFactory;
 import com.venky.swf.plugins.background.eventloop.CoreEvent;
 import in.succinct.bap.shell.db.model.BecknAction;
 import in.succinct.bap.shell.db.model.BecknTransaction;
-import in.succinct.beckn.BecknException;
-import in.succinct.beckn.Context;
-import in.succinct.beckn.Error;
-import in.succinct.beckn.Error.Type;
-import in.succinct.beckn.Message;
 import in.succinct.beckn.Order;
 import in.succinct.beckn.Request;
-import in.succinct.beckn.SellerException;
 import in.succinct.beckn.Subscriber;
-import org.json.simple.JSONObject;
 
+import javax.sound.midi.Track;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
-import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 @SuppressWarnings("unused")
@@ -52,7 +46,7 @@ public class ResponseSynchronizer {
         return getInstance();
     }
 
-    final Map<String,Tracker> responseMessages = new HashMap<>(){
+    final HashMap<String,Tracker> responseMessages = new HashMap<>(){
         @Override
         public Tracker get(Object key) {
             Tracker tracker = super.get(key);
@@ -69,101 +63,60 @@ public class ResponseSynchronizer {
         }
 
     };
-
-    public Tracker open(Request request){
-        return responseMessages.get(request.getContext().getMessageId());
+    public Tracker createTracker(Request request){
+        return responseMessages.get( request.getContext().getMessageId());
     }
 
-    public void start (Request request, int maxResponses){
-        Tracker tracker = responseMessages.get(request.getContext().getMessageId());
-        if (!tracker.isStarted()){
-            tracker.start(request,maxResponses);
-            service.schedule(() -> {
-                //Timer thread.
-                shutdown(request.getContext().getMessageId());
-            }, request.getContext().
-                    getTtl() * 1000L, TimeUnit.MILLISECONDS);
-        }
-    }
-    private ScheduledExecutorService service = Executors.newScheduledThreadPool(1);
-
-
-    public void addResponse(Request request){
-        String messageId = request.getContext().getMessageId();
-        Tracker tracker = getTracker(messageId);
-        if (tracker != null) {
-            tracker.addResponse(request);
-        }else {
-            tracker = responseMessages.get(messageId);
-            tracker.addResponse(request);
-            close(messageId);
-        }
-    }
-    public void close(String messageId){
-        synchronized (responseMessages) {
-            responseMessages.remove(messageId);
-        }
-    }
-    public void shutdown(String messageId){
+    public Tracker getTracker(String messageId, boolean returnNewIfNone){
         synchronized (responseMessages) {
             if (responseMessages.containsKey(messageId)) {
-                Tracker tracker = responseMessages.get(messageId);
-                if (tracker != null) {
-                    tracker.shutdown();
-                }
+                return responseMessages.get(messageId);
+            }else if (returnNewIfNone){
+                return new Tracker();
             }
-        }
-    }
-    public boolean isRequestActive(String messageId){
-        return getTracker(messageId) != null;
-    }
-    private Tracker getTracker(String messageId){
-        Tracker tracker = null;
-        synchronized (responseMessages) {
-            if (responseMessages.containsKey(messageId)) {
-                tracker = responseMessages.get(messageId);
-            }
-        }
-        return tracker;
-    }
-
-    public Request getNextResponse(String messageId){
-        Tracker tracker = getTracker(messageId);
-        if (tracker != null) {
-            return tracker.nextResponse();
         }
         return null;
     }
-    public boolean isComplete(String messageId){
-        Tracker tracker = getTracker(messageId);
-        if (tracker != null ){
-            return tracker.isComplete();
-        }
-        return true;
+    private static final ScheduledExecutorService service = Executors.newScheduledThreadPool(1);
+
+    public void addResponse(Request response){
+        String messageId = response.getContext().getMessageId();
+        Tracker tracker = getTracker(messageId,true);
+        tracker.addResponse(response);
     }
-
-
-
+    public void closeTracker(String messageId){
+        synchronized (responseMessages) {
+            Tracker tracker = responseMessages.remove(messageId);
+        }
+    }
 
     public static class Tracker {
         long start;
         long end ;
         Bucket pendingResponses;
-        CoreEvent sourceEvent;
         boolean shutdown = false;
         BecknAction action ;
         Request request = null;
+        CoreEvent watcher = null;
+        ScheduledFuture<?> keepAliveTrigger = null;
+        ScheduledFuture<?> shutDownTrigger = null;
+
         public Tracker(){
 
         }
-        private void start(Request request,int maxResponses){
+        public void start(Request request,int maxResponses){
             synchronized (this) {
                 if (this.start <= 0) {
                     this.start = request.getContext().getTimestamp().getTime();
                     this.end = this.start + request.getContext().getTtl() * 1000L;
-                    this.sourceEvent = CoreEvent.getCurrentEvent();
                     this.pendingResponses = new Bucket(maxResponses);
                     this.request = request;
+                    this.keepAliveTrigger = service.scheduleWithFixedDelay(()->{
+                        notifyWatcher();
+                    },5000L,10000L ,TimeUnit.MILLISECONDS);
+                    this.shutDownTrigger = service.schedule(()->{
+                        shutdown();
+                    },request.getContext().getTtl() *1000L,TimeUnit.MILLISECONDS);
                 }
             }
         }
@@ -210,21 +163,27 @@ public class ResponseSynchronizer {
                 }
                 if (!unsolicited) {
                     responses.add(response);
-                    trigger();
+                    notifyWatcher();
                 }
             }
         }
         @SuppressWarnings("BooleanMethodIsAlwaysInverted")
-        public boolean isStarted(){
-            return start > 0;
+        private boolean isStarted(){
+            synchronized (this) {
+                return start > 0;
+            }
         }
 
-        public boolean isResponsesCollected(){
-            return  shutdown || ( start > 0 && (end < System.currentTimeMillis()) ) || (pendingResponses != null && pendingResponses.intValue() <= 0) ;
+        private boolean isResponsesCollected(){
+            synchronized (this) {
+                return shutdown || (start > 0 && (end < System.currentTimeMillis())) || (pendingResponses != null && pendingResponses.intValue() <= 0);
+            }
         }
 
         public boolean isComplete(){
-            return isResponsesCollected() && responses.isEmpty();
+            synchronized (this) {
+                return isResponsesCollected() && responses.isEmpty();
+            }
         }
 
         public Request nextResponse(){
@@ -233,34 +192,56 @@ public class ResponseSynchronizer {
                     return responses.removeFirst();
                 }
             }
-            if (isComplete()){
-                if (request != null) {
-                    if (ResponseSynchronizer.getInstance().isRequestActive(request.getContext().getMessageId())) {
-                        ResponseSynchronizer.getInstance().close(request.getContext().getMessageId());
-                        Request dummy = new Request();
-                        dummy.setContext(new Context());
-                        dummy.getContext().update(request.getContext());
-                        dummy.setError(new Error());
-                        dummy.getError().setType(Type.DOMAIN_ERROR);
-                        BecknException sellerException = new SellerException.NoDataAvailable();
-                        dummy.getError().setCode(sellerException.getErrorCode());
-                        dummy.getError().setMessage(sellerException.getMessage());
-                        return dummy;
-                    }
-                }
-            }
+
             return null;
         }
-        public void shutdown(){
-            this.shutdown = true;
-            trigger();
-        }
 
-        public void trigger() {
-            if (sourceEvent != null) {
-                TaskManager.instance().executeAsync(sourceEvent, false);
+        public void shutdown(){
+            synchronized (this) {
+                this.shutdown = true;
+                if (this.keepAliveTrigger != null && !this.keepAliveTrigger.isCancelled()) {
+                    this.keepAliveTrigger.cancel(false);
+                }
+                if (this.shutDownTrigger != null && !this.shutDownTrigger.isCancelled()) {
+                    this.shutDownTrigger.cancel(false);
+                }
+                if (this.watcher == null){
+                    if (request != null) {
+                        ResponseSynchronizer.getInstance().closeTracker(request.getContext().getMessageId());
+                    }
+                }else {
+                    notifyWatcher();
+                }
             }
         }
+
+        public void notifyWatcher() {
+            synchronized (this) {
+                if (watcher != null) {
+                    AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton(watcher));
+                    watcher = null;
+                }
+            }
+        }
+
+        public void startWatching() {
+            synchronized (this) {
+                if (watcher == null) {
+                    watcher = CoreEvent.getCurrentEvent();
+                } else if (watcher != CoreEvent.getCurrentEvent()) {
+                    throw new RuntimeException("Some other thread is watching this");
+                }
+            }
+        }
+
+        public boolean isWatched(){
+            synchronized (this) {
+                return watcher != null;
+            }
+        }
+
+
+
     }
 
 }

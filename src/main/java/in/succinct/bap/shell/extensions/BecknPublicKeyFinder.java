@@ -5,7 +5,9 @@ import com.venky.extension.Extension;
 import com.venky.extension.Registry;
 import com.venky.swf.routing.Config;
 import in.succinct.bap.shell.controller.NetworkController;
+import in.succinct.bap.shell.network.Network;
 import in.succinct.beckn.Subscriber;
+import in.succinct.onet.core.adaptor.NetworkAdaptorFactory;
 
 import java.util.List;
 
@@ -29,7 +31,7 @@ public class BecknPublicKeyFinder implements Extension {
         //subscriber.setCountry("IND");
 
 
-        List<Subscriber> responses = NetworkController.getNetworkAdaptor().lookup(subscriber,true);
+        List<Subscriber> responses = NetworkAdaptorFactory.getInstance().getAdaptor(Network.getInstance().getNetworkId()).lookup(subscriber,true);
 
         if (!responses.isEmpty()){
             publicKeyHolder.set(responses.get(0).getSigningPublicKey());

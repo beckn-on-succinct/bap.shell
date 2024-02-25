@@ -4,6 +4,7 @@ import com.venky.core.util.ObjectHolder;
 import com.venky.extension.Extension;
 import com.venky.extension.Registry;
 import in.succinct.bap.shell.controller.NetworkController;
+import in.succinct.bap.shell.network.Network;
 import in.succinct.beckn.Request;
 import in.succinct.beckn.Subscriber;
 
@@ -19,7 +20,7 @@ public class PrivateKeyFinder implements Extension {
         if (holder.get() != null){
             return;
         }
-        Subscriber self = NetworkController.getSubscriber();
+        Subscriber self = Network.getInstance().getSubscriber(Subscriber.SUBSCRIBER_TYPE_BAP,Network.getInstance().getNetworkId()); // This would be incomplete
         String privateKey = Request.getPrivateKey(self.getSubscriberId(),self.getUniqueKeyId());
         holder.set(String.format("%s:%s",self.getUniqueKeyId(),privateKey));
     }

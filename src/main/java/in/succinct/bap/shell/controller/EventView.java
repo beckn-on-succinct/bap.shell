@@ -25,7 +25,7 @@ public class EventView extends View {
         HttpServletResponse response = getPath().getResponse();
         response.setStatus(httpStatusCode);
         response.setContentType(MimeType.TEXT_EVENT_STREAM.toString());
-        response.addHeader("Cache-Control","no-cache");
+        response.addHeader("Cache-Control","no-store");
         response.addHeader("Connection","keep-alive");
         response.setCharacterEncoding(StandardCharsets.UTF_8.toString());
         try {
@@ -36,8 +36,12 @@ public class EventView extends View {
     }
     public void write(String event) throws IOException{
         HttpServletResponse response = getPath().getResponse();
-        response.getWriter().println(String.format("data: %s\n\n", event));
+        String wireEvent  = String.format("data: %s\n\n", event);
+
+        response.getWriter().print(wireEvent);
         response.getWriter().flush();
+        response.flushBuffer();
+        Config.instance().getLogger(getClass().getName()).log(Level.INFO,"Server Sent Event\n" + wireEvent);
     }
 
 }
