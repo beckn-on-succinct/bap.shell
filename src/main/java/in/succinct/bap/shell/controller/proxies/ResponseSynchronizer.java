@@ -6,11 +6,11 @@ import com.venky.swf.plugins.background.core.AsyncTaskManagerFactory;
 import com.venky.swf.plugins.background.eventloop.CoreEvent;
 import in.succinct.bap.shell.db.model.BecknAction;
 import in.succinct.bap.shell.db.model.BecknTransaction;
+import in.succinct.beckn.Message;
 import in.succinct.beckn.Order;
 import in.succinct.beckn.Request;
 import in.succinct.beckn.Subscriber;
 
-import javax.sound.midi.Track;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -97,7 +97,7 @@ public class ResponseSynchronizer {
         boolean shutdown = false;
         BecknAction action ;
         Request request = null;
-        CoreEvent watcher = null;
+        CoreEvent listener = null;
         ScheduledFuture<?> keepAliveTrigger = null;
         ScheduledFuture<?> shutDownTrigger = null;
 
@@ -112,7 +112,7 @@ public class ResponseSynchronizer {
                     this.pendingResponses = new Bucket(maxResponses);
                     this.request = request;
                     this.keepAliveTrigger = service.scheduleWithFixedDelay(()->{
-                        notifyWatcher();
+                        notifyListener();
                     },5000L,10000L ,TimeUnit.MILLISECONDS);
                     this.shutDownTrigger = service.schedule(()->{
                         shutdown();
@@ -120,22 +120,25 @@ public class ResponseSynchronizer {
                 }
             }
         }
-        private BecknAction initializeBecknTransaction(Request request){
+        private BecknAction     initializeBecknTransaction(Request request){
             BecknTransaction becknTransaction = Database.getTable(BecknTransaction.class).newRecord();
             becknTransaction.setTransactionId(request.getContext().getTransactionId());
             becknTransaction = Database.getTable(BecknTransaction.class).getRefreshed(becknTransaction);
             if (Subscriber.BAP_ACTION_SET.contains(request.getContext().getAction())){
-                Order order = request.getMessage().getOrder();
-                if (order != null){
-                    String orderJson = becknTransaction.getOrderJson();
-                    Order persisted = null;
-                    if (orderJson != null){
-                        persisted = new Order(orderJson);
-                        persisted.update(order);
-                    }else {
-                        persisted = order;
+                Message message = request.getMessage();
+                if (message != null) {
+                    Order order = request.getMessage().getOrder();
+                    if (order != null) {
+                        String orderJson = becknTransaction.getOrderJson();
+                        Order persisted = null;
+                        if (orderJson != null) {
+                            persisted = new Order(orderJson);
+                            persisted.update(order);
+                        } else {
+                            persisted = order;
+                        }
+                        becknTransaction.setOrderJson(persisted.getInner().toString());
                     }
-                    becknTransaction.setOrderJson(persisted.getInner().toString());
                 }
             }
             becknTransaction.save();
@@ -163,7 +166,7 @@ public class ResponseSynchronizer {
                 }
                 if (!unsolicited) {
                     responses.add(response);
-                    notifyWatcher();
+                    notifyListener();
                 }
             }
         }
@@ -205,38 +208,40 @@ public class ResponseSynchronizer {
                 if (this.shutDownTrigger != null && !this.shutDownTrigger.isCancelled()) {
                     this.shutDownTrigger.cancel(false);
                 }
-                if (this.watcher == null){
+                if (this.listener == null){
                     if (request != null) {
                         ResponseSynchronizer.getInstance().closeTracker(request.getContext().getMessageId());
                     }
                 }else {
-                    notifyWatcher();
+                    notifyListener();
                 }
             }
         }
 
-        public void notifyWatcher() {
+        public void notifyListener() {
             synchronized (this) {
-                if (watcher != null) {
-                    AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton(watcher));
-                    watcher = null;
+                if (listener != null) {
+                    AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton(listener));
+                    listener = null;
                 }
             }
         }
 
-        public void startWatching() {
+        public void registerListener(CoreEvent listener) {
             synchronized (this) {
-                if (watcher == null) {
-                    watcher = CoreEvent.getCurrentEvent();
-                } else if (watcher != CoreEvent.getCurrentEvent()) {
-                    throw new RuntimeException("Some other thread is watching this");
+                if (this.listener == null) {
+                   this.listener = listener;
+                }
+
+                if (this.listener != listener) {
+                    throw new RuntimeException("Some other watcher is watching!");
                 }
             }
         }
 
-        public boolean isWatched(){
+        public boolean isBeingObserved(){
             synchronized (this) {
-                return watcher != null;
+                return listener != null;
             }
         }
 

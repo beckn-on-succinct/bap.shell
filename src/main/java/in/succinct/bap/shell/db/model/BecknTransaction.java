@@ -14,7 +14,7 @@ public interface BecknTransaction extends Model {
     public String getTransactionId();
     public void setTransactionId(String transactionId);
 
-    @COLUMN_SIZE(2^16)
+    @COLUMN_SIZE(65536)
     public String getOrderJson();
     public void setOrderJson(String orderJson);
 

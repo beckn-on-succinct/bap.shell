@@ -5,10 +5,11 @@ import com.venky.core.util.Bucket;
 import com.venky.core.util.ObjectUtil;
 import com.venky.swf.controller.Controller;
 import com.venky.swf.controller.annotations.RequireLogin;
+import com.venky.swf.db.Database;
 import com.venky.swf.db.annotations.column.ui.mimes.MimeType;
 import com.venky.swf.path.Path;
-import com.venky.swf.plugins.background.core.CoreTask;
-import com.venky.swf.plugins.background.core.TaskManager;
+import com.venky.swf.plugins.background.core.AsyncTaskManagerFactory;
+import com.venky.swf.plugins.background.core.Task;
 import com.venky.swf.plugins.background.eventloop.CoreEvent;
 import com.venky.swf.plugins.beckn.tasks.BecknApiCall;
 import com.venky.swf.routing.Config;
@@ -16,6 +17,7 @@ import com.venky.swf.sql.Expression;
 import com.venky.swf.sql.Operator;
 import com.venky.swf.sql.Select;
 import com.venky.swf.views.BytesView;
+import com.venky.swf.views.NoContentView;
 import com.venky.swf.views.View;
 import in.succinct.bap.shell.controller.proxies.BapController;
 import in.succinct.bap.shell.controller.proxies.BppController;
@@ -26,6 +28,7 @@ import in.succinct.bap.shell.network.Network;
 import in.succinct.beckn.Acknowledgement;
 import in.succinct.beckn.Acknowledgement.Status;
 import in.succinct.beckn.BecknException;
+import in.succinct.beckn.BecknObjects;
 import in.succinct.beckn.Context;
 import in.succinct.beckn.Error;
 import in.succinct.beckn.Error.Type;
@@ -37,12 +40,14 @@ import in.succinct.beckn.SellerException.InvalidSignature;
 import in.succinct.beckn.Subscriber;
 import in.succinct.onet.core.adaptor.NetworkAdaptor;
 import in.succinct.onet.core.adaptor.NetworkAdaptorFactory;
+import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -152,7 +157,7 @@ public class NetworkController extends Controller implements BapController, BppC
                                 ResponseSynchronizer.getInstance().closeTracker(messageId);
                                 eventView.write(String.format("{\"done\" : true , \"message_id\" : \"%s\"}",messageId));
                             } else if (numResponsesReceived.intValue() == 0){
-                                tracker.startWatching();
+                                tracker.registerListener(this);
                             }
                         }catch (Exception ex){
                             ResponseSynchronizer.getInstance().closeTracker(messageId);
@@ -162,7 +167,7 @@ public class NetworkController extends Controller implements BapController, BppC
 
                 @Override
                 public boolean isReady() {
-                    return super.isReady() && ( !tracker.isWatched() || tracker.isComplete()); //Clients will auto reconnect.
+                    return super.isReady() && ( !tracker.isBeingObserved() || tracker.isComplete()); //Clients will auto reconnect.
                 }
             });
         }else {
@@ -196,11 +201,13 @@ public class NetworkController extends Controller implements BapController, BppC
             Request request = new Request((JSONObject) Request.parse(StringUtil.read(getPath().getInputStream())));
             Subscriber self = getSubscriber();
             initializeRequest(self,request);
-            String auth = request.generateAuthorizationHeader(self.getSubscriberId(), self.getUniqueKeyId());
             NetworkAdaptor networkAdaptor = getNetworkAdaptor();
 
             Subscriber transmittedToSubscriber = isSearch ? networkAdaptor.getSearchProvider() :
-                    networkAdaptor.lookup(request.getContext().getBppId(),true).get(0);
+                    networkAdaptor.lookup(new Subscriber(){{
+                        setSubscriberId(request.getContext().getBppId());
+                        setType(Subscriber.SUBSCRIBER_TYPE_BPP);
+                    }},true).get(0);
 
             Tracker tracker = ResponseSynchronizer.getInstance().createTracker(request);
 
@@ -212,22 +219,100 @@ public class NetworkController extends Controller implements BapController, BppC
                       setCountry(request.getContext().getCountry());
                     }},true).size():1) : 1);
 
-            TaskManager.instance().executeAsync((CoreTask) ()->{
-                BecknApiCall.build().url(transmittedToSubscriber.getSubscriberUrl(),
-                                request.getContext().getAction()).schema(networkAdaptor.getDomains().get(request.getContext().getDomain()).getSchemaURL()).
-                        headers(new HashMap<>() {{
-                            put("Content-Type", "application/json");
-                            put("Accept", "application/json");
-                            put("Authorization", auth);
-                        }}).path("/"+action).request(request).call();
 
-            }, false);
+            BppRequestTask requestTask = new BppRequestTask(self,transmittedToSubscriber,networkAdaptor,request);
+            AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton(requestTask));
+
+            boolean callBackToBeSynchronized = Database.getJdbcTypeHelper("").getTypeRef(boolean.class).getTypeConverter().valueOf(getPath().getHeader("X-CallBackToBeSynchronized"));
+            if (!callBackToBeSynchronized) {
+                return new BytesView(getPath(),request.getInner().toString().getBytes(StandardCharsets.UTF_8),MimeType.APPLICATION_JSON);
+            }else {
+
+                CoreEvent.spawnOff(new CoreEvent(){
+                    {
+                        tracker.registerListener(this);
+                    }
+                    @Override
+                    public void execute() {
+                        super.execute();
+                        Requests requests = new Requests();
+                        Request response = null;
+                        synchronized (tracker) {
+                            while ((response = tracker.nextResponse()) != null) {
+                                requests.add(response);
+                            }
+                            if (tracker.isComplete()) {
+                                ResponseSynchronizer.getInstance().closeTracker(request.getContext().getMessageId());
+                                try {
+                                    //Request connection is committed after this response is committed in HttpCoreEvent
+                                    new BytesView(getPath(), requests.getInner().toString().getBytes(StandardCharsets.UTF_8), MimeType.APPLICATION_JSON).write();
+                                }catch (IOException ex){
+                                    throw new RuntimeException(ex);
+                                }
+                            }else {
+                                tracker.registerListener(this);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public boolean isReady() {
+                        return super.isReady() &&  tracker.isComplete() ;
+                    }
+                });
+                return new NoContentView(getPath()); //Request is kept open
+            }
 
 
 
-            return new BytesView(getPath(),request.getInner().toString().getBytes(StandardCharsets.UTF_8),MimeType.APPLICATION_JSON);
         }catch (Exception ex){
             throw new RuntimeException(ex);
+        }
+    }
+
+    public static class Requests extends BecknObjects<Request> {
+        public Requests() {
+        }
+
+        public Requests(JSONArray value) {
+            super(value);
+        }
+
+        public Requests(String payload) {
+            super(payload);
+        }
+    }
+    public static class BppRequestTask implements Task {
+        Subscriber to ;
+        Subscriber from;
+        NetworkAdaptor networkAdaptor;
+        Request request;
+        Response response = null;
+        public BppRequestTask(Subscriber from, Subscriber to, NetworkAdaptor networkAdaptor , Request request){
+            this.from = from;
+            this.to = to;
+            this.networkAdaptor = networkAdaptor;
+            this.request = request;
+        }
+
+
+        @Override
+        public void execute() {
+            String auth = request.generateAuthorizationHeader(from.getSubscriberId(), from.getUniqueKeyId());
+
+            BecknApiCall call = BecknApiCall.build().url(to.getSubscriberUrl(),
+                            request.getContext().getAction()).schema(networkAdaptor.getDomains().get(request.getContext().getDomain()).getSchemaURL()).
+                    headers(new HashMap<>() {{
+                        put("Content-Type", "application/json");
+                        put("Accept", "application/json");
+                        put("Authorization", auth);
+                    }}).path("/" + request.getContext().getAction()).request(request).call();
+
+            this.response = call.getResponse();
+        }
+
+        public Response getResponse() {
+            return response;
         }
     }
 
@@ -266,10 +351,11 @@ public class NetworkController extends Controller implements BapController, BppC
             request = new Request((JSONObject) Request.parse(StringUtil.read(getPath().getInputStream())));
             if ( !Config.instance().getBooleanProperty("beckn.auth.enabled", false)  ||
                     request.verifySignature("Authorization",getPath().getHeaders())){
+
                 Request r = request;
-                TaskManager.instance().executeAsync((CoreTask)()->{
+                AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton((Task)()->{
                     ResponseSynchronizer.getInstance().addResponse(r);
-                },false);
+                }));
             }
             return ack(request);
         }catch (Exception ex){
