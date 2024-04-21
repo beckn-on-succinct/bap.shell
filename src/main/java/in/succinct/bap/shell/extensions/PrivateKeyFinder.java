@@ -22,6 +22,6 @@ public class PrivateKeyFinder implements Extension {
         }
         Subscriber self = Network.getInstance().getSubscriber(Subscriber.SUBSCRIBER_TYPE_BAP,Network.getInstance().getNetworkId()); // This would be incomplete
         String privateKey = Request.getPrivateKey(self.getSubscriberId(),self.getUniqueKeyId());
-        holder.set(String.format("%s:%s",self.getUniqueKeyId(),privateKey));
+        holder.set(String.format("%s|%s:%s",self.getSubscriberId() , self.getUniqueKeyId(),privateKey));
     }
 }

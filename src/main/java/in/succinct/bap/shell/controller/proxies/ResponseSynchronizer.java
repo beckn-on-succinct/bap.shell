@@ -1,23 +1,36 @@
 package in.succinct.bap.shell.controller.proxies;
 
 import com.venky.core.util.Bucket;
+import com.venky.core.util.ObjectUtil;
 import com.venky.swf.db.Database;
 import com.venky.swf.plugins.background.core.AsyncTaskManagerFactory;
 import com.venky.swf.plugins.background.eventloop.CoreEvent;
 import in.succinct.bap.shell.db.model.BecknAction;
 import in.succinct.bap.shell.db.model.BecknTransaction;
+import in.succinct.beckn.Catalog;
+import in.succinct.beckn.Fulfillment;
+import in.succinct.beckn.FulfillmentStop;
+import in.succinct.beckn.Location;
 import in.succinct.beckn.Message;
 import in.succinct.beckn.Order;
+import in.succinct.beckn.Provider;
 import in.succinct.beckn.Request;
+import in.succinct.beckn.Response;
 import in.succinct.beckn.Subscriber;
+import org.json.simple.JSONObject;
+import org.json.simple.JSONValue;
 
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @SuppressWarnings("unused")
 public class ResponseSynchronizer {
@@ -100,11 +113,12 @@ public class ResponseSynchronizer {
         CoreEvent listener = null;
         ScheduledFuture<?> keepAliveTrigger = null;
         ScheduledFuture<?> shutDownTrigger = null;
+        String searchTransactionId = null;
 
         public Tracker(){
 
         }
-        public void start(Request request,int maxResponses){
+        public void start(Request request,int maxResponses,String searchTransactionId){
             synchronized (this) {
                 if (this.start <= 0) {
                     this.start = request.getContext().getTimestamp().getTime();
@@ -117,6 +131,7 @@ public class ResponseSynchronizer {
                     this.shutDownTrigger = service.schedule(()->{
                         shutdown();
                     },request.getContext().getTtl() *1000L,TimeUnit.MILLISECONDS);
+                    this.searchTransactionId = searchTransactionId;
                 }
             }
         }
@@ -124,22 +139,8 @@ public class ResponseSynchronizer {
             BecknTransaction becknTransaction = Database.getTable(BecknTransaction.class).newRecord();
             becknTransaction.setTransactionId(request.getContext().getTransactionId());
             becknTransaction = Database.getTable(BecknTransaction.class).getRefreshed(becknTransaction);
-            if (Subscriber.BAP_ACTION_SET.contains(request.getContext().getAction())){
-                Message message = request.getMessage();
-                if (message != null) {
-                    Order order = request.getMessage().getOrder();
-                    if (order != null) {
-                        String orderJson = becknTransaction.getOrderJson();
-                        Order persisted = null;
-                        if (orderJson != null) {
-                            persisted = new Order(orderJson);
-                            persisted.update(order);
-                        } else {
-                            persisted = order;
-                        }
-                        becknTransaction.setOrderJson(persisted.getInner().toString());
-                    }
-                }
+            if (!ObjectUtil.isVoid(searchTransactionId) && !ObjectUtil.equals(searchTransactionId,becknTransaction.getSearchTransactionId())) {
+                becknTransaction.setSearchTransactionId(searchTransactionId);
             }
             becknTransaction.save();
             BecknAction action = Database.getTable(BecknAction.class).newRecord();

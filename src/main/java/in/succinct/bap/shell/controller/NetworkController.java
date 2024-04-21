@@ -217,7 +217,8 @@ public class NetworkController extends Controller implements BapController, BppC
                       setDomain(request.getContext().getDomain());
                       setCity(request.getContext().getCity());
                       setCountry(request.getContext().getCountry());
-                    }},true).size():1) : 1);
+                    }},true).size():1) : 1,
+                    getPath().getHeader("SearchTransactionId"));
 
 
             BppRequestTask requestTask = new BppRequestTask(self,transmittedToSubscriber,networkAdaptor,request);
@@ -292,7 +293,8 @@ public class NetworkController extends Controller implements BapController, BppC
             this.from = from;
             this.to = to;
             this.networkAdaptor = networkAdaptor;
-            this.request = request;
+            this.request = networkAdaptor.getObjectCreator(request.getContext().getDomain()).create(Request.class);
+            this.request.update(request);
         }
 
 
@@ -325,8 +327,12 @@ public class NetworkController extends Controller implements BapController, BppC
         }
         context.setBapId(self.getSubscriberId());
         context.setBapUri(self.getSubscriberUrl());
-        context.setCity(self.getCity());
-        context.setCountry(self.getCountry());
+        if (context.getCity() == null) {
+            context.setCity(self.getCity());
+        }
+        if (context.getCountry() == null) {
+            context.setCountry(self.getCountry());
+        }
         context.setAction(getPath().action());
         if (context.get("ttl") == null){
             context.setTtl(10L);
@@ -343,16 +349,19 @@ public class NetworkController extends Controller implements BapController, BppC
         if (ObjectUtil.isVoid(context.getMessageId())) {
             context.setMessageId(UUID.randomUUID().toString());
         }
+
     }
 
     public View on_act(){
         Request request = null;
         try {
             request = new Request((JSONObject) Request.parse(StringUtil.read(getPath().getInputStream())));
+            request.setObjectCreator(getNetworkAdaptor().getObjectCreator(request.getContext().getDomain()));
             if ( !Config.instance().getBooleanProperty("beckn.auth.enabled", false)  ||
                     request.verifySignature("Authorization",getPath().getHeaders())){
 
-                Request r = request;
+                Request r = new Request();
+                r.update(request);
                 AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton((Task)()->{
                     ResponseSynchronizer.getInstance().addResponse(r);
                 }));
