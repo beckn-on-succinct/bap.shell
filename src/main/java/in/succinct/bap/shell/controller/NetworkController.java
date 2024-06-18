@@ -17,6 +17,7 @@ import com.venky.swf.sql.Expression;
 import com.venky.swf.sql.Operator;
 import com.venky.swf.sql.Select;
 import com.venky.swf.views.BytesView;
+import com.venky.swf.views.EventView;
 import com.venky.swf.views.NoContentView;
 import com.venky.swf.views.View;
 import in.succinct.bap.shell.controller.proxies.BapController;

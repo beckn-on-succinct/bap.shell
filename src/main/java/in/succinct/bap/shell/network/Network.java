@@ -76,7 +76,7 @@ public class Network {
         String relativeUrl = ObjectUtil.equals(role,Subscriber.SUBSCRIBER_TYPE_BAP) ? "network" :
                 ObjectUtil.equals(role,Subscriber.SUBSCRIBER_TYPE_BG)? "bg" :
                         ObjectUtil.equals(role,Subscriber.SUBSCRIBER_TYPE_LOCAL_REGISTRY)? "subscribers":
-                                ObjectUtil.equals(role,Subscriber.SUBSCRIBER_TYPE_BAP)? "network" :null;
+                                ObjectUtil.equals(role,Subscriber.SUBSCRIBER_TYPE_BPP)? "bpp" :null;
 
         if (ObjectUtil.isVoid(relativeUrl)){
             throw new RuntimeException("Cant figure relative url for " + role );

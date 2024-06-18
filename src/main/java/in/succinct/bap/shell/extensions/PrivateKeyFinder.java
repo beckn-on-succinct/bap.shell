@@ -3,7 +3,6 @@ package in.succinct.bap.shell.extensions;
 import com.venky.core.util.ObjectHolder;
 import com.venky.extension.Extension;
 import com.venky.extension.Registry;
-import in.succinct.bap.shell.controller.NetworkController;
 import in.succinct.bap.shell.network.Network;
 import in.succinct.beckn.Request;
 import in.succinct.beckn.Subscriber;
