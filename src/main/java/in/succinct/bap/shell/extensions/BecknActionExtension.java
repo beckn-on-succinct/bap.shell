@@ -88,8 +88,11 @@ public class BecknActionExtension extends ModelOperationExtension<BecknAction> {
                 Catalog catalog = catalogs == null ? null : catalogs.get(response.getContext().getBppId());
                 if (catalog != null){
                     Provider provider = order.getProvider();
-                    Fulfillment fulfillment = order.getFulfillment();
-                    Payment payment = order.getPayment();
+                    Fulfillments fulfillments = order.getFulfillments();
+                    Fulfillment fulfillment = fulfillments != null && !fulfillments.isEmpty() ? fulfillments.get(0) : null ;
+                    Payments payments = order.getPayments();
+                    Payment payment = payments != null && !payments.isEmpty() ? payments.get(0) : null ;
+                    
                     NonUniqueItems nonUniqueItems = getItems(order, fulfillment); //0.9.3
 
                     if (provider != null){
