@@ -27,7 +27,7 @@ public class BecknTransactionImpl extends ModelImpl<BecknTransaction> {
     public String getFulfillmentStartJson(){
         Order order = getOrder();
         Fulfillment f = getFulfillment(order);
-        FulfillmentStop start = f == null ? null : f.getStart() ;
+        FulfillmentStop start = f == null ? null : f._getStart() ;
         return start == null ? null : start.getInner().toString();
     
     }
@@ -43,7 +43,7 @@ public class BecknTransactionImpl extends ModelImpl<BecknTransaction> {
     public String getFulfillmentEndJson(){
         Order order = getOrder();
         Fulfillment f = getFulfillment(order);
-        FulfillmentStop end = f == null ? null : f.getEnd() ;
+        FulfillmentStop end = f == null ? null : f._getEnd() ;
         return end == null ? null : end.getInner().toString();
     }
 

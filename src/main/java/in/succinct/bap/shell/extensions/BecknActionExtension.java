@@ -136,7 +136,7 @@ public class BecknActionExtension extends ModelOperationExtension<BecknAction> {
                         }
                         if (fulfillment != null){
                             fulfillment.update(catalogFulfillments.get(fulfillment.getId()),false);
-                            FulfillmentStop start = fulfillment.getStart();
+                            FulfillmentStop start = fulfillment._getStart();
                             Location startLocation =  start == null ? null :start.getLocation();
                             if (startLocation != null && startLocation.getId() != null){
                                 startLocation.update(catalogLocations.get(startLocation.getId()));
