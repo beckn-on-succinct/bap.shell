@@ -1,36 +1,23 @@
 package in.succinct.bap.shell.controller.proxies;
 
+import com.venky.core.string.StringUtil;
 import com.venky.core.util.Bucket;
 import com.venky.core.util.ObjectUtil;
 import com.venky.swf.db.Database;
 import com.venky.swf.plugins.background.core.AsyncTaskManagerFactory;
-import com.venky.swf.plugins.background.eventloop.CoreEvent;
+import com.venky.swf.plugins.background.core.CoreTask;
+import com.venky.swf.routing.Config;
 import in.succinct.bap.shell.db.model.BecknAction;
 import in.succinct.bap.shell.db.model.BecknTransaction;
-import in.succinct.beckn.Catalog;
-import in.succinct.beckn.Fulfillment;
-import in.succinct.beckn.FulfillmentStop;
-import in.succinct.beckn.Location;
-import in.succinct.beckn.Message;
-import in.succinct.beckn.Order;
-import in.succinct.beckn.Provider;
 import in.succinct.beckn.Request;
-import in.succinct.beckn.Response;
-import in.succinct.beckn.Subscriber;
-import org.json.simple.JSONObject;
-import org.json.simple.JSONValue;
 
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
-import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 @SuppressWarnings("unused")
 public class ResponseSynchronizer {
@@ -110,13 +97,17 @@ public class ResponseSynchronizer {
         boolean shutdown = false;
         BecknAction action ;
         Request request = null;
-        CoreEvent listener = null;
-        ScheduledFuture<?> keepAliveTrigger = null;
+        CoreTask listener = null;
+        //ScheduledFuture<?> keepAliveTrigger = null;
+        // this is an over kill, we notify on message receipt and on shutdown thats enough.
         ScheduledFuture<?> shutDownTrigger = null;
         String searchTransactionId = null;
 
         public Tracker(){
 
+        }
+        public String getMessageId(){
+            return request.getContext().getMessageId();
         }
         public void start(Request request,int maxResponses,String searchTransactionId){
             synchronized (this) {
@@ -125,9 +116,9 @@ public class ResponseSynchronizer {
                     this.end = this.start + request.getContext().getTtl() * 1000L;
                     this.pendingResponses = new Bucket(maxResponses);
                     this.request = request;
-                    this.keepAliveTrigger = service.scheduleWithFixedDelay(()->{
+                    /*this.keepAliveTrigger = service.scheduleWithFixedDelay(()->{
                         notifyListener();
-                    },5000L,10000L ,TimeUnit.MILLISECONDS);
+                    },5000L,10000L ,TimeUnit.MILLISECONDS);*/
                     this.shutDownTrigger = service.schedule(()->{
                         shutdown();
                     },request.getContext().getTtl() *1000L,TimeUnit.MILLISECONDS);
@@ -153,7 +144,9 @@ public class ResponseSynchronizer {
 
         @SuppressWarnings("unchecked")
         public void addResponse(Request response){
+            Config.instance().getLogger(getClass().getName()).info(String.format("Received Response|%s|\n" , StringUtil.valueOf(response)));
             synchronized (this) {
+                Config.instance().getLogger(getClass().getName()).info(String.format("Acquired Lock|%s|\n" , StringUtil.valueOf(response)));
                 boolean unsolicited = !isStarted();
 
                 action = initializeBecknTransaction(response);
@@ -166,11 +159,14 @@ public class ResponseSynchronizer {
                     this.pendingResponses.decrement();
                 }
                 if (!unsolicited) {
+                    if (response != null) {
                     responses.add(response);
+                    }
                     notifyListener();
                 }
             }
         }
+
         @SuppressWarnings("BooleanMethodIsAlwaysInverted")
         private boolean isStarted(){
             synchronized (this) {
@@ -180,7 +176,9 @@ public class ResponseSynchronizer {
 
         private boolean isResponsesCollected(){
             synchronized (this) {
-                return shutdown || (start > 0 && (end < System.currentTimeMillis())) || (pendingResponses != null && pendingResponses.intValue() <= 0);
+                long now = System.currentTimeMillis();
+                Config.instance().getLogger(getClass().getName()).info("Shutdown:%b\n start: %d\n end: %d\n currentTime : %d\n".formatted(shutdown,start,end,now));
+                return shutdown || (start > 0 && (end < now)) || (pendingResponses != null && pendingResponses.intValue() <= 0);
             }
         }
 
@@ -191,8 +189,11 @@ public class ResponseSynchronizer {
         }
 
         public Request nextResponse(){
+            Config.instance().getLogger(getClass().getName()).info("Checking next Response");
             synchronized (this) {
+                Config.instance().getLogger(getClass().getName()).info("Acquired Lock before checking response");
                 if (!responses.isEmpty()) {
+                    Config.instance().getLogger(getClass().getName()).info("Returning locked Response");
                     return responses.removeFirst();
                 }
             }
@@ -200,12 +201,25 @@ public class ResponseSynchronizer {
             return null;
         }
 
+        public void close(){
+            this.shutdown(true);
+        }
         public void shutdown(){
+            shutdown(false);
+        }
+        private void shutdown(boolean clearMessages){
             synchronized (this) {
+                if (shutdown){
+                    return;
+                }
                 this.shutdown = true;
+                if (clearMessages){
+                    this.responses.clear();
+                }
+                /*
                 if (this.keepAliveTrigger != null && !this.keepAliveTrigger.isCancelled()) {
                     this.keepAliveTrigger.cancel(false);
-                }
+                }*/
                 if (this.shutDownTrigger != null && !this.shutDownTrigger.isCancelled()) {
                     this.shutDownTrigger.cancel(false);
                 }
@@ -222,13 +236,16 @@ public class ResponseSynchronizer {
         public void notifyListener() {
             synchronized (this) {
                 if (listener != null) {
+                    Config.instance().getLogger(getClass().getName()).info("Notifying Listener");
                     AsyncTaskManagerFactory.getInstance().addAll(Collections.singleton(listener));
                     listener = null;
+                }else {
+                    Config.instance().getLogger(getClass().getName()).info("No Listener");
                 }
             }
         }
 
-        public void registerListener(CoreEvent listener) {
+        public void registerListener(CoreTask listener) {
             synchronized (this) {
                 if (this.listener == null) {
                    this.listener = listener;
